@@ -1,0 +1,11 @@
+# Building
+node-gyp configure
+node-gyp build
+
+g++ zmq_pull.cc fancy_int.pb.cc -lzmq -lprotobuf -o zmq_pull
+g++ zmq_push.cc fancy_int.pb.cc -lzmq -lprotobuf -o zmq_push
+
+# Running, in 3 terminals
+node main.js
+./zmq_pull
+./zmq_push

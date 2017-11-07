@@ -1,0 +1,7 @@
+syntax = "proto2";
+
+package challenge;
+
+message FancyInt {
+  required uint32 n = 1;
+}
