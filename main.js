@@ -15,10 +15,11 @@ const process = () => {
       output.push(input[i] ** 2);
     }
 
+    addon.flushToOutput(output);
+
     // Empty it for next time, or make it local to this scope...
     input.splice(0, input.length);
-
-    addon.flushToOutput(output);
+    output.splice(0, output.length);
   }
 
   setImmediate(process);
