@@ -3,6 +3,7 @@
 #include <thread>
 #include <mutex>
 #include <chrono>
+#include <deque>
 #include <iostream>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -13,12 +14,27 @@
 using namespace v8;
 
 std::mutex inputVectorAccess;
-std::mutex outputVectorAccess;
+std::mutex outputQueueAccess;
 std::vector<unsigned int> inputs;
-std::vector<unsigned int> outputs;
+std::deque<unsigned int> outputs;
+bool outputThreadRunning;
+
+// Helper(s)
+static void SendUIntViaSocket(zmq::socket_t* sock, unsigned int n) {
+  challenge::FancyInt fI;
+  std::string fI_asString;
+
+  fI.set_n(n);
+  fI.SerializeToString(&fI_asString);
+
+  zmq::message_t request(fI_asString.length());
+  memcpy(request.data(), fI_asString.c_str(), fI_asString.length());
+
+  sock->send(request);
+}
 
 // I/O Thread bodies
-static void DoInputThread(Isolate* isolate) {
+static void DoInputThread() {
   std::cout<<"Input thread body running..."<<std::endl;
 
   zmq::context_t context(1);
@@ -40,7 +56,9 @@ static void DoInputThread(Isolate* isolate) {
   }
 }
 
-static void DoOutputThread(Isolate* isolate) {
+static void DoOutputThread() {
+  outputThreadRunning = true;
+
   std::cout<<"Output thread body running..."<<std::endl;
 
   zmq::context_t context(1);
@@ -48,43 +66,32 @@ static void DoOutputThread(Isolate* isolate) {
 
   socket.bind("ipc://challenge-out.ipc");
 
-  challenge::FancyInt fI;
-  std::string fI_asString;
+  while (outputs.size() > 0) {
+    outputQueueAccess.lock();
 
-  while (true) {
-    outputVectorAccess.lock();
+    std::cout<<"sending "<<outputs[0]
 
-    for (unsigned int i = 0; i < outputs.size(); i++) {
-      fI.set_n(outputs[i]);
-      fI.SerializeToString(&fI_asString);
+    SendUIntViaSocket(&socket, outputs[0]);
+    outputs.pop_front();
 
-      zmq::message_t request(fI_asString.length());
-      memcpy(request.data(), fI_asString.c_str(), fI_asString.length());
-
-      socket.send(request);
-    }
-
-    outputs.clear();
-    outputVectorAccess.unlock();
+    outputQueueAccess.unlock();
   }
+
+  outputThreadRunning = false;
 }
 
 void StartInputThread(const v8::FunctionCallbackInfo<v8::Value>&args) {
   Isolate* isolate = args.GetIsolate();
 
-  std::thread inputThread(DoInputThread, isolate);
+  std::thread inputThread(DoInputThread);
   inputThread.detach();
 
   args.GetReturnValue().Set(Undefined(isolate));
 }
 
-void StartOutputThread(const v8::FunctionCallbackInfo<v8::Value>&args) {
-  Isolate* isolate = args.GetIsolate();
-
-  std::thread outputThread(DoOutputThread, isolate);
+static void StartOutputThread() {
+  std::thread outputThread(DoOutputThread);
   outputThread.detach();
-
-  args.GetReturnValue().Set(Undefined(isolate));
 }
 
 void FlushPendingInputs(const v8::FunctionCallbackInfo<v8::Value>&args) {
@@ -104,16 +111,22 @@ void FlushPendingInputs(const v8::FunctionCallbackInfo<v8::Value>&args) {
 
 void FlushToOutput(const v8::FunctionCallbackInfo<v8::Value>&args) {
   Isolate* isolate = args.GetIsolate();
-
   Local<Array> outputJSArray = Local<Array>::Cast(args[0]);
 
-  outputVectorAccess.lock();
+  if (outputJSArray->Length() > 0) {
+    outputQueueAccess.lock();
 
-  for (unsigned int i = 0; i < outputJSArray->Length(); i++) {
-    outputs.push_back(outputJSArray->Get(i)->NumberValue());
+    for (unsigned int i = 0; i < outputJSArray->Length(); i++) {
+      outputs.push_back(outputJSArray->Get(i)->NumberValue());
+    }
+
+    outputQueueAccess.unlock();
+
+    // On-demand output thread
+    if (!outputThreadRunning) {
+      StartOutputThread();
+    }
   }
-
-  outputVectorAccess.unlock();
 
   args.GetReturnValue().Set(Undefined(isolate));
 }
@@ -121,8 +134,9 @@ void FlushToOutput(const v8::FunctionCallbackInfo<v8::Value>&args) {
 void init(Local<Object> exports) {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
+  outputThreadRunning = false;
+
   NODE_SET_METHOD(exports, "startInputThread", StartInputThread);
-  NODE_SET_METHOD(exports, "startOutputThread", StartOutputThread);
   NODE_SET_METHOD(exports, "flushPendingInputs", FlushPendingInputs);
   NODE_SET_METHOD(exports, "flushToOutput", FlushToOutput);
 }

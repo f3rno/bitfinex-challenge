@@ -4,7 +4,6 @@ const input = [];
 const output = [];
 
 addon.startInputThread();
-addon.startOutputThread();
 
 const process = () => {
   addon.flushPendingInputs(input);
