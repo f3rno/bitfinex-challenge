@@ -14,13 +14,17 @@
 using namespace v8;
 
 std::mutex inputVectorAccess;
-std::mutex outputQueueAccess;
 std::vector<unsigned int> inputs;
 std::deque<unsigned int> outputs;
 bool outputThreadRunning;
 
+zmq::context_t zmqContext(1);
+zmq::socket_t pushSocket(zmqContext, ZMQ_PUB);
+zmq::socket_t pullSocket(zmqContext, ZMQ_SUB);
+
+
 // Helper(s)
-static void SendUIntViaSocket(zmq::socket_t* sock, unsigned int n) {
+static void SendUIntViaPushSocket(unsigned int n) {
   challenge::FancyInt fI;
   std::string fI_asString;
 
@@ -30,28 +34,26 @@ static void SendUIntViaSocket(zmq::socket_t* sock, unsigned int n) {
   zmq::message_t request(fI_asString.length());
   memcpy(request.data(), fI_asString.c_str(), fI_asString.length());
 
-  sock->send(request);
+  pushSocket.send(request);
+}
+
+static unsigned int ReceiveUIntViaPullSocket() {
+  zmq::message_t response;
+  pullSocket.recv(&response);
+
+  challenge::FancyInt fI = challenge::FancyInt();
+  fI.ParseFromArray(response.data(), response.size());
+
+  return fI.n();
 }
 
 // I/O Thread bodies
 static void DoInputThread() {
-  std::cout<<"Input thread body running..."<<std::endl;
-
-  zmq::context_t context(1);
-  zmq::socket_t socket(context, ZMQ_SUB);
-
-  socket.connect("ipc://challenge-in.ipc");
-  socket.setsockopt(ZMQ_SUBSCRIBE, "", 0);
-
   while (true) {
-    zmq::message_t response;
-    socket.recv(&response);
-
-    challenge::FancyInt fI = challenge::FancyInt();
-    fI.ParseFromArray(response.data(), response.size());
+    unsigned int n = ReceiveUIntViaPullSocket();
 
     inputVectorAccess.lock();
-    inputs.push_back(fI.n());
+    inputs.push_back(n);
     inputVectorAccess.unlock();
   }
 }
@@ -59,22 +61,9 @@ static void DoInputThread() {
 static void DoOutputThread() {
   outputThreadRunning = true;
 
-  std::cout<<"Output thread body running..."<<std::endl;
-
-  zmq::context_t context(1);
-  zmq::socket_t socket(context, ZMQ_PUB);
-
-  socket.bind("ipc://challenge-out.ipc");
-
   while (outputs.size() > 0) {
-    outputQueueAccess.lock();
-
-    std::cout<<"sending "<<outputs[0]<<std::endl;
-
-    SendUIntViaSocket(&socket, outputs[0]);
+    SendUIntViaPushSocket(outputs[0]);
     outputs.pop_front();
-
-    outputQueueAccess.unlock();
   }
 
   outputThreadRunning = false;
@@ -98,11 +87,12 @@ void FlushPendingInputs(const v8::FunctionCallbackInfo<v8::Value>&args) {
   Isolate* isolate = args.GetIsolate();
   Local<Array> jsArray = Local<Array>::Cast(args[0]);
 
+  inputVectorAccess.lock();
+
   for (unsigned int i = 0; i < inputs.size(); i++) {
     jsArray->Set(i, Integer::New(isolate, inputs[i]));
   }
 
-  inputVectorAccess.lock();
   inputs.clear();
   inputVectorAccess.unlock();
 
@@ -114,13 +104,9 @@ void FlushToOutput(const v8::FunctionCallbackInfo<v8::Value>&args) {
   Local<Array> outputJSArray = Local<Array>::Cast(args[0]);
 
   if (outputJSArray->Length() > 0) {
-    outputQueueAccess.lock();
-
     for (unsigned int i = 0; i < outputJSArray->Length(); i++) {
       outputs.push_back(outputJSArray->Get(i)->NumberValue());
     }
-
-    outputQueueAccess.unlock();
 
     // On-demand output thread
     if (!outputThreadRunning) {
@@ -135,6 +121,10 @@ void init(Local<Object> exports) {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
   outputThreadRunning = false;
+
+  pushSocket.bind("ipc://challenge-out.ipc");
+  pullSocket.connect("ipc://challenge-in.ipc");
+  pullSocket.setsockopt(ZMQ_SUBSCRIBE, "", 0);
 
   NODE_SET_METHOD(exports, "startInputThread", StartInputThread);
   NODE_SET_METHOD(exports, "flushPendingInputs", FlushPendingInputs);
