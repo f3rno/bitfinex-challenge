@@ -69,7 +69,7 @@ static void DoOutputThread() {
   while (outputs.size() > 0) {
     outputQueueAccess.lock();
 
-    std::cout<<"sending "<<outputs[0]
+    std::cout<<"sending "<<outputs[0]<<std::endl;
 
     SendUIntViaSocket(&socket, outputs[0]);
     outputs.pop_front();
