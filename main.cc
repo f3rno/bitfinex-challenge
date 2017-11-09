@@ -22,7 +22,6 @@ zmq::context_t zmqContext(1);
 zmq::socket_t pushSocket(zmqContext, ZMQ_PUB);
 zmq::socket_t pullSocket(zmqContext, ZMQ_SUB);
 
-
 // Helper(s)
 static void SendUIntViaPushSocket(unsigned int n) {
   challenge::FancyInt fI;
@@ -110,6 +109,10 @@ void FlushToOutput(const v8::FunctionCallbackInfo<v8::Value>&args) {
 
     // On-demand output thread
     if (!outputThreadRunning) {
+
+      // To be safe, in case we are called before the thread is scheduled
+      outputThreadRunning = true;
+
       StartOutputThread();
     }
   }
