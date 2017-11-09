@@ -29,8 +29,6 @@ int main () {
 
     std::cout<<"sent "<<i<<std::endl;
     i++;
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 
   return 0;
